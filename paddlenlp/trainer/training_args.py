@@ -1490,31 +1490,58 @@ class TrainingArguments:
                         logger.warning("segment parallel is not supported!!!, Ignore it.")
                     return support_sep
 
+                def is_context_parallel_supported():
+                    import inspect
+
+                    members = [name for (name, date) in inspect.getmembers(fleet.HybridCommunicateGroup)]
+                    support_cp = "get_context_parallel_world_size" in members
+                    if not support_cp:
+                        logger.warning("context parallel is not supported!!! Ignore it.")
+                    return support_cp
+
                 if self.hybrid_parallel_topo_order == "pp_first":
-                    if is_segment_parallel_supported():
+                    if is_context_parallel_supported():
+                        order = ["dp", "pp", "sharding", "sep", "cp", "mp"]
+                    elif is_segment_parallel_supported():
                         order = ["dp", "pp", "sharding", "sep", "mp"]
                     else:
                         order = ["dp", "pp", "sharding", "mp"]
                 if self.hybrid_parallel_topo_order == "sharding_first":
-                    if is_segment_parallel_supported():
+                    if is_context_parallel_supported():
+                        order = ["dp", "sharding", "pp", "sep", "cp", "mp"]
+                    elif is_segment_parallel_supported():
                         order = ["dp", "sharding", "pp", "sep", "mp"]
                     else:
                         order = ["dp", "sharding", "pp", "mp"]
                 if self.use_expert_parallel:
                     if self.moe_sharding_parallel_degree >= 1 and self.expert_parallel_degree > 1:
-                        order = ["sharding", "moe_sharding", "pp", "sep", "dp", "ep", "mp"]
+                        if is_context_parallel_supported():
+                            order = ["sharding", "moe_sharding", "pp", "sep", "cp", "dp", "ep", "mp"]
+                        else:
+                            order = ["sharding", "moe_sharding", "pp", "sep", "dp", "ep", "mp"]
                     else:
-                        order = ["sharding", "pp", "sep", "dp", "mp"]
+                        if is_context_parallel_supported():
+                            order = ["sharding", "pp", "sep", "cp", "dp", "mp"]
+                        else:
+                            order = ["sharding", "pp", "sep", "dp", "mp"]
 
-                if is_segment_parallel_supported():
+                if is_context_parallel_supported():
                     hybrid_configs = {
                         "dp_degree": self.data_parallel_degree,
                         "mp_degree": self.tensor_parallel_degree,
                         "pp_degree": self.pipeline_parallel_degree,
                         "sharding_degree": self.sharding_parallel_degree,
-                        "sep_degree": self.sep_parallel_degree
-                        if self.sep_parallel_degree > 1
-                        else self.context_parallel_degree,
+                        "sep_degree": self.sep_parallel_degree,
+                        "cp_degree": self.context_parallel_degree,
+                        "order": order,
+                    }
+                elif is_segment_parallel_supported():
+                    hybrid_configs = {
+                        "dp_degree": self.data_parallel_degree,
+                        "mp_degree": self.tensor_parallel_degree,
+                        "pp_degree": self.pipeline_parallel_degree,
+                        "sharding_degree": self.sharding_parallel_degree,
+                        "sep_degree": self.sep_parallel_degree,
                         "order": order,
                     }
                 else:
@@ -1864,9 +1891,15 @@ class TrainingArguments:
 
             # init hcg for communication in trainer
             if self.hybrid_parallel_topo_order == "pp_first":
-                order = ["pp", "dp", "sharding", "sep", "mp"]
+                if is_context_parallel_supported():
+                    order = ["pp", "dp", "sharding", "sep", "cp", "mp"]
+                else:
+                    order = ["pp", "dp", "sharding", "sep", "mp"]
             elif self.hybrid_parallel_topo_order == "sharding_first":
-                order = ["dp", "sharding", "pp", "sep", "mp"]
+                if is_context_parallel_supported():
+                    order = ["dp", "sharding", "pp", "sep", "cp", "mp"]
+                else:
+                    order = ["dp", "sharding", "pp", "sep", "mp"]
                 if self.expert_parallel_degree > 1:
                     logger.warning(
                         "Currently using sharding_first topo order, but pp_first is recommended when using experts parallel for performance."
@@ -2173,6 +2206,17 @@ class TrainingArguments:
             hcg = fleet.get_hybrid_communicate_group()
             if hasattr(hcg, "get_expert_parallel_rank"):
                 return max(hcg.get_expert_parallel_rank(), 0)
+            else:
+                return 0
+        else:
+            return 0
+
+    @property
+    def context_parallel_rank(self):
+        if self.use_hybrid_parallel:
+            hcg = fleet.get_hybrid_communicate_group()
+            if hasattr(hcg, "get_context_parallel_rank"):
+                return max(hcg.get_context_parallel_rank(), 0)
             else:
                 return 0
         else:
